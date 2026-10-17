@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="게임 커뮤니티의 버그 신호를 한눈에. QA Sentinel 이슈 모니터링 대시보드.">
+  <title>QA Sentinel · 커뮤니티 모니터링</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%23176d50'/%3E%3Cpath d='M20 7l11 5v9c0 7-11 13-11 13S9 28 9 21v-9z' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="#dashboard"><span class="brand-symbol" data-icon="shield"></span><span>QA Sentinel<span class="brand-sub">COMMUNITY INTELLIGENCE</span></span></a>
+    <div class="workspace"><span class="workspace-icon">Q</span><div>게임 QA 워크스페이스<small>Community monitoring</small></div><span class="workspace-arrow">⌄</span></div>
+    <div class="nav-label">워크스페이스</div>
+    <nav aria-label="주 메뉴">
+      <a href="#dashboard" data-page="dashboard"><span data-icon="grid"></span>대시보드</a>
+      <a href="#feedback" data-page="feedback"><span data-icon="message"></span>유저 피드백<span class="nav-count" id="feedback-count">0</span></a>
+      <a href="#channels" data-page="channels"><span data-icon="radio"></span>수집 채널</a>
+      <a href="#dictionary" data-page="dictionary"><span data-icon="book"></span>키워드 사전</a>
+      <a href="#events" data-page="events"><span data-icon="bell"></span>감지 기록<span class="tiny-dot"></span></a>
+    </nav>
+    <div class="nav-label second">관리</div>
+    <nav><a href="#settings" data-page="settings"><span data-icon="settings"></span>모니터링 설정</a></nav>
+    <div class="sidebar-bottom"><div class="monitor-mini"><span class="pulse-dot"></span><span id="mini-status">데이터 불러오는 중</span><small>수집 주기 15분</small></div><div class="user"><span class="avatar">QA</span><div>QA 관리자<small>로컬 워크스페이스</small></div><span data-icon="chevrons"></span></div></div>
+  </aside>
+  <div class="content-shell">
+    <header class="topbar"><button class="icon-button mobile-menu" id="mobile-menu" aria-label="메뉴 열기"><span data-icon="menu"></span></button><div class="breadcrumb">워크스페이스 <span>/</span> <strong id="breadcrumb-page">대시보드</strong></div><div class="topbar-right"><span id="connection-status" class="connection-status" role="status">서버 확인 중</span><span class="top-divider"></span><span class="top-avatar">QA</span></div></header>
+    <main id="main" tabindex="-1"><div class="loading-state"><span class="spinner"></span>모니터링 데이터를 불러오고 있습니다.</div></main>
+    <footer><span><span class="footer-dot"></span> QA Sentinel <span class="footer-version">v1.4</span></span><span>작은 신호도 놓치지 않도록.</span><span>모든 시각은 KST 기준</span></footer>
+  </div>
+</div>
+<dialog id="modal"><div id="modal-content"></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+</body></html>
