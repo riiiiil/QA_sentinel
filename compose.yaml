@@ -1,0 +1,59 @@
+name: qa-sentinel
+
+x-runtime: &runtime
+  image: qa-sentinel:1.4.0
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options:
+      max-size: 5m
+      max-file: "3"
+
+services:
+  sentinel:
+    <<: *runtime
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    # Keep the HOST address on loopback. Access from a PC through an SSH tunnel.
+    ports:
+      - "127.0.0.1:${QA_SENTINEL_PORT:-8000}:8000"
+    volumes:
+      - sentinel_data:/data
+
+  backup:
+    <<: *runtime
+    restart: unless-stopped
+    depends_on:
+      sentinel:
+        condition: service_healthy
+    command: [python, -m, qa_sentinel.backup, daemon, --data-dir, /data, --backup-dir, /backups, --keep, "14"]
+    # SQLite's read-only WAL connection can need writable shared-memory files.
+    volumes:
+      - sentinel_data:/data
+      - sentinel_backups:/backups
+    healthcheck:
+      test: [CMD, python, -m, qa_sentinel.backup, check, --backup-dir, /backups]
+      interval: 5m
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  maintenance:
+    <<: *runtime
+    profiles: [tools]
+    command: [python, -m, qa_sentinel.backup, list, --backup-dir, /backups]
+    volumes:
+      - sentinel_data:/data
+      - sentinel_backups:/backups
+    healthcheck:
+      disable: true
+
+volumes:
+  sentinel_data:
+  sentinel_backups:
