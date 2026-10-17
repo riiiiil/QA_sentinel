@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!requirements.txt
+!requirements-deploy.txt
+!run.py
+!qa_sentinel/
+!qa_sentinel/**
+!scripts/
+!scripts/container_health.py
+**/__pycache__
+**/*.pyc
