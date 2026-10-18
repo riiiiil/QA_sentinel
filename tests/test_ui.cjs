@@ -2,7 +2,7 @@
 const fs=require('fs'),vm=require('vm'),assert=require('assert');
 const path=require('path');
 let code=fs.readFileSync(path.join(__dirname,'../qa_sentinel/static/app.js'),'utf8');
-code=code.slice(0,code.lastIndexOf('hydrate();load();setInterval'));
+code=code.slice(0,code.lastIndexOf('// Start the application.'));
 const nodes=new Map(),documentEvents=new Map();
 function classes(){const set=new Set();return{add:x=>set.add(x),remove:x=>set.delete(x),contains:x=>set.has(x),toggle(x){set.has(x)?set.delete(x):set.add(x);}};}
 function node(selector){
@@ -33,6 +33,9 @@ vm.runInContext(code,context);
  keyword='';assert.strictEqual(filteredPosts().length,3);
  search='내용';assert.strictEqual(filteredPosts().length,0);search='';
  mode='live';assert(heading('테스트','').includes('15분마다'));mode='demo';
+ mode='live';state.collection={started_at:'2026-10-17T11:55:00Z',finished_at:'2026-10-17T11:56:00Z',outcome:'completed'};
+ assert(heading('테스트','').includes('최근 수집 종료'));assert(!heading('테스트','').includes('마지막 화면 갱신'));
+ state.collecting=true;assert(collectionTimeText().includes('수집 진행 중'));state.collecting=false;mode='demo';
  sourceModal();assert.strictEqual(modal.nativeModalCalls,1);assert.strictEqual(modal.dataset.lockBackdrop,'true');assert(document.documentElement.classList.contains('modal-open'));
  assert(modal.innerHTML.includes('value="arcalive"'));assert(modal.innerHTML.includes('아카라이브'));
  assert(!modal.innerHTML.includes('name="body_selector"'));assert(modal.innerHTML.includes('목록 행 내부 작성 시각'));
