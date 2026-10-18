@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import os
 import logging
 import uuid
@@ -14,7 +15,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -22,6 +23,7 @@ from . import __version__
 from .core import Database, DEFAULT_SETTINGS, DEFAULT_KEYWORDS, now, parse_date, stamp, valid_url
 from .crawlers import crawl, error_message
 from .politeness import REQUEST_GUARD, SiteBlocked, CooldownActive, site_domain
+from .notifications import CollectionNotifications
 
 DATA = Path(os.environ.get("QA_SENTINEL_DATA", Path(__file__).resolve().parents[1] / ".sentinel-data"))
 DATABASES = {}
@@ -34,6 +36,29 @@ CHANNEL_CONCURRENCY = 3
 SCHEDULER_TICK_SECONDS = 10
 COLLECTION_INTERVAL_SECONDS = 15 * 60
 OFFLINE_TEST = os.environ.get("QA_SENTINEL_OFFLINE_TEST") == "1"
+SERVER_ID = uuid.uuid4().hex
+collection_notifications = CollectionNotifications()
+
+
+def collection_snapshot(collecting=None):
+    last = database("live").get("last_collection") or {}
+    current = collection_status if collection_status.get("started_at") else last
+    return {"server_id": SERVER_ID, "completed_revision": last.get("revision", 0),
+            "collecting": collection_lock.locked() if collecting is None else collecting,
+            "collection": {**current, "results": list(current.get("results", []))}}
+
+
+async def collection_stream(request):
+    # Register before reading the snapshot so a completion cannot be missed.
+    async with collection_notifications.subscribe() as queue:
+        yield "retry: 3000\nevent: collection\ndata: " + json.dumps(collection_snapshot(), ensure_ascii=False) + "\n\n"
+        while not await request.is_disconnected():
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=20)
+            except TimeoutError:
+                yield ": keep-alive\n\n"
+            else:
+                yield "event: collection\ndata: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
 def database(mode):
@@ -75,7 +100,8 @@ async def collect(due_only=False):
         eligible, waiting, active = collection_candidates(db, due_only)
         if not eligible:
             return {"message": waiting_message(waiting, active), "results": []}
-        collection_status.update(started_at=stamp(now()), finished_at=None, total=len(eligible), completed=0, results=[])
+        collection_status.update(run_id=uuid.uuid4().hex, started_at=stamp(now()), finished_at=None, total=len(eligible), completed=0, results=[], outcome="running")
+        collection_notifications.publish(collection_snapshot(collecting=True))
         semaphore = asyncio.Semaphore(CHANNEL_CONCURRENCY)
         site_locks = defaultdict(asyncio.Lock)
 
@@ -165,11 +191,17 @@ async def collect(due_only=False):
                     collection_status["results"].append(result)
             return result
 
+        finished = False
         try:
             results = await asyncio.gather(*(collect_source(s) for s in eligible))
+            finished = True
             return {"message": "수집이 완료되었습니다.", "results": results}
         finally:
             collection_status["finished_at"] = stamp(now())
+            collection_status["outcome"] = "completed" if finished else "interrupted"
+            previous = db.get("last_collection") or {}
+            db.put("last_collection", {**collection_status, "results": list(collection_status["results"]), "revision": previous.get("revision", 0) + 1})
+            collection_notifications.publish(collection_snapshot(collecting=False))
 
 
 def start_collection(due_only=False):
@@ -260,8 +292,18 @@ def state(mode: str = "demo"):
     return {"mode": mode, "version": __version__, "offline_test": OFFLINE_TEST, "at": stamp(at), "started_at": db.get("started_at"),
             "settings": db.get("settings"), "keywords": db.get("keywords"), "sources": sources,
             "posts": db.posts(), "detection": detection, "events": db.events(),
-            "collecting": collection_lock.locked() or bool(collection_tasks),
-            "collection": {**collection_status, "results": list(collection_status["results"])} if mode == "live" else None}
+            **(collection_snapshot() if mode == "live" else {"server_id": SERVER_ID, "completed_revision": 0, "collecting": False, "collection": None})}
+
+
+@app.get("/api/collection")
+async def collection_progress():
+    return collection_snapshot()
+
+
+@app.get("/api/collection/events")
+async def collection_events(request: Request):
+    return StreamingResponse(collection_stream(request), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 class Settings(BaseModel):
