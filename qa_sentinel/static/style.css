@@ -470,6 +470,12 @@ h1{font-size:30px;font-weight:750;letter-spacing:-.8px}
 .metric-top{color:#475569;font-size:14px;font-weight:600}
 .metric-number{font-size:34px;font-weight:750}
 .metric-bottom{font-size:12px;flex-wrap:wrap;color:#52647b;line-height:1.6}
+.detection-metric{min-width:0}
+.detection-viewport{height:96px;overflow:hidden;margin-top:10px}
+.detection-slide{height:96px;box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;padding:1px 0 2px}
+.detection-slide-heading{display:flex;align-items:center;gap:8px;color:#475569;font-size:13px;font-variant-numeric:tabular-nums}
+.detection-keyword{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:23px;line-height:1.4;font-weight:750;color:var(--ink)}
+.detection-slide-caption{display:flex;justify-content:space-between;gap:6px;font-size:12px;line-height:1.5;color:#52647b;font-variant-numeric:tabular-nums}
 .card-title{font-size:17px;font-weight:700;color:#172b4d}
 .card-subtitle{font-size:13px;color:#52647b}
 .card-link{color:#1d4ed8;font-size:14px;font-weight:600;background:#f8faff}
