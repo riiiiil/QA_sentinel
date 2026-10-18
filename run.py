@@ -89,7 +89,7 @@ def main(argv=None):
             if args.open_browser:
                 from threading import Thread
                 Thread(target=open_when_ready, args=(args.port,), daemon=True).start()
-            uvicorn.run("qa_sentinel.app:app", host=args.host, port=args.port, log_config=log_config)
+            uvicorn.run("qa_sentinel.app:app", host=args.host, port=args.port, log_config=log_config, timeout_graceful_shutdown=5)
     except RuntimeError as exc:
         print("[ERROR] " + str(exc))
         return 2
