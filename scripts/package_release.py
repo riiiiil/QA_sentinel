@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
     files = [ROOT / name for name in ["README.md", "START-HERE.md", "MANUAL-TEST.md", "RELEASE-NOTES.md", "requirements.txt", "bootstrap.py", "run.py",
         "start.bat", "start.sh", "test.bat", "test.sh", "manual-test.bat", "manual-test.sh",
-        "tests/test_ui.cjs", "scripts/package_release.py", "DEPLOY-PRIVATE.md", "Dockerfile", ".dockerignore", "compose.yaml", "scripts/container_health.py", "requirements-deploy.txt"]]
+        "tests/test_ui.cjs", "tests/test_refresh.cjs", "scripts/package_release.py", "DEPLOY-PRIVATE.md", "Dockerfile", ".dockerignore", "compose.yaml", "scripts/container_health.py", "requirements-deploy.txt"]]
     files += sorted((ROOT / "tests").glob("test_sentinel*.py"))
     files += sorted(path for path in (ROOT / "qa_sentinel").rglob("*") if path.is_file() and "__pycache__" not in path.parts)
     entries = {str(path.relative_to(ROOT)).replace("\\", "/"): path.read_bytes() for path in files}
