@@ -70,8 +70,31 @@ function sourceBadge(p){const src=state.sources.find(s=>s.id===p.source_id);retu
 function statusFor(p){const k=p.keywords.map(name=>state.detection.keywords.find(k=>k.name===name)?.count||0);const n=Math.max(0,...k);return n>=state.settings.danger?'danger':n>=state.settings.warning?'warning':'normal';}
 function pauseButton(){return `<button class="btn" data-action="pause">${icon(state.settings.running?'pause':'play')}${state.settings.running?'일시정지':'모니터링 시작'}</button>`;}
 function collectButton(){const working=busy||(mode==='live'&&state.collecting);const progress=working&&state.collection?.total?` ${state.collection.completed}/${state.collection.total}`:'';return `<button class="btn primary" data-action="collect" ${working?'disabled':''}>${working?'<span class="spinner"></span>':icon('refresh')}${working?'수집 중'+progress:'지금 수집'}</button>`;}
+let detectionSlideTimer=null,detectionSlideAnimation=null;
+function alertKeywords(){return state.detection.keywords.map(k=>({...k,level:k.count>=state.settings.danger?'danger':k.count>=state.settings.warning?'warning':'normal'})).filter(k=>k.level!=='normal').sort((a,b)=>(b.level==='danger')-(a.level==='danger')||b.count-a.count||a.name.localeCompare(b.name,'ko'));}
+function detectionSlide(item,index,total){return `<div class="detection-slide"><div class="detection-slide-heading">${badge(item.level)}<span>${number(item.count)}건</span></div><strong class="detection-keyword" title="${e(item.name)}">${e(item.name)}</strong><div class="detection-slide-caption"><span>최근 ${state.settings.window_minutes}분</span>${total>1?`<span>${index+1} / ${total}</span>`:''}</div></div>`;}
+function detectionMetric(){const items=alertKeywords();return `<article class="metric detection-metric"><div class="metric-top">현재 감지 상태${icon('shield')}</div>${items.length?`<div class="detection-viewport" role="group" aria-label="주의·위험 감지 키워드" aria-live="off"><div class="detection-track">${detectionSlide(items[0],0,items.length)}</div></div>`:'<div class="metric-number status tone-normal"><span class="status-pip"></span>정상</div>'}</article>`;}
+function stopDetectionSlides(){clearTimeout(detectionSlideTimer);detectionSlideTimer=null;detectionSlideAnimation?.cancel();detectionSlideAnimation=null;}
+function startDetectionSlides(){
+ const track=$('.detection-track');if(page!=='dashboard'||!track||document.hidden)return;
+ const items=alertKeywords();if(!items.length)return;track.innerHTML=detectionSlide(items[0],0,items.length);if(items.length<2)return;let index=0;
+ const advance=()=>{
+  if(!track.isConnected||page!=='dashboard'||document.hidden){stopDetectionSlides();return;}
+  const previous=detectionSlide(items[index],index,items.length);index=(index+1)%items.length;
+  const next=detectionSlide(items[index],index,items.length);
+  if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){track.innerHTML=next;}
+  else{
+   track.innerHTML=previous+next;
+   const animation=track.animate([{transform:'translateY(0)'},{transform:'translateY(-50%)'}],{duration:340,easing:'ease-in-out',fill:'forwards'});
+   detectionSlideAnimation=animation;
+   animation.onfinish=()=>{track.innerHTML=next;animation.cancel();if(detectionSlideAnimation===animation)detectionSlideAnimation=null;};
+  }
+  detectionSlideTimer=setTimeout(advance,5000);
+ };
+ detectionSlideTimer=setTimeout(advance,5000);
+}
 function render(){page=location.hash.slice(1)||'dashboard';if(!labels[page])page='dashboard';$$('nav [data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));$('#breadcrumb-page').textContent=labels[page];document.title=`${labels[page]} · QA Sentinel`;
-const views={dashboard:dashboardView,feedback:feedbackView,channels:channelsView,dictionary:dictionaryView,events:eventsView,settings:settingsView};main.innerHTML=views[page]();hydrate(main);if(page==='dashboard')drawChart();if(page==='dashboard'||page==='feedback')renderTable();}
+stopDetectionSlides();const views={dashboard:dashboardView,feedback:feedbackView,channels:channelsView,dictionary:dictionaryView,events:eventsView,settings:settingsView};main.innerHTML=views[page]();hydrate(main);if(page==='dashboard'){drawChart();startDetectionSlides();}if(page==='dashboard'||page==='feedback')renderTable();}
 function sitePauseNotice(){const paused=state.sources.filter(s=>s.enabled&&s.cooldown_until);if(mode!=='live'||!paused.length)return '';return `<div class="warning-note site-pause-notice" role="status"><strong>${paused.length}개 채널의 사이트 수집이 자동 대기 중입니다.</strong> 대기 중에는 새 글을 확인할 수 없습니다. <a href="#channels">재시도 시각 확인 →</a></div>`;}
 function dashboardView(){const s=state.settings,d=state.detection,matched=currentPosts(),active=state.sources.filter(s=>s.enabled),at=new Date(state.at);const lastHour=matched.filter(p=>at-new Date(p.published_at)<=3600000).length;
 return heading('커뮤니티 모니터링','유저의 목소리에서, 가장 먼저 발견하는 버그 신호.',pauseButton()+collectButton())+sitePauseNotice()+
@@ -79,7 +102,7 @@ return heading('커뮤니티 모니터링','유저의 목소리에서, 가장 �
 <div class="metric-grid">
 ${metric('수집한 전체 게시글',number(state.posts.length),'<small>건</small>',`${icon('check')} <span class="green">중복 URL 제외</span><span>· 누적 수집량</span>`,'file')}
 ${metric('필터링된 피드백',number(matched.length),'<small>건</small>',`<span class="red">최근 1시간 ${number(lastHour)}건</span><span>· 사전 일치 게시글</span>`,'filter')}
-${metric('현재 감지 상태',`<span class="status-pip"></span>${levels[d.level]}`,'',`<span>최근 ${s.window_minutes}분</span><span>· ${d.count}건 / 위험 ${s.danger}건</span>`,'shield',`status tone-${d.level}`)}
+${detectionMetric()}
 ${metric('모니터링 채널',number(active.length),`<small>/ ${state.sources.length}개</small>`,`<span class="green">${mode==='demo'?'샘플 채널':active.length?'수집 주기 15분':'채널 등록 대기'}</span>`,'radio')}
 </div>
 <div class="analysis-grid"><section class="card chart-card"><div class="card-header"><div><h2 class="card-title">${icon('activity')} 버그 언급량 추이</h2><div class="card-subtitle">작성 시각 기준 · 고유 게시글 수</div></div><div class="segmented" aria-label="그래프 시간 범위">${[1,6,24].map(n=>`<button data-action="range" data-value="${n}" class="${range===n?'active':''}">${n}시간</button>`).join('')}</div></div><div class="chart-legend"><span class="legend-item">버그 언급량</span><span class="legend-item warning">주의 기준 (${s.warning}건 / 구간)</span></div><div class="chart-wrap" id="chart"></div><div class="chart-footer">${icon('info')} 그래프는 구간별 게시글 수입니다. 상태 판정은 최근 ${s.window_minutes}분의 합계입니다.</div></section>
@@ -167,6 +190,6 @@ refreshController=new CollectionRefresh({
  onDeferred:()=>{if(modal.open||['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))$('#connection-status').textContent='새 수집 결과 대기 · 입력 후 반영';},
 });
 document.addEventListener('focusout',()=>setTimeout(()=>refreshController.resume(),0));
-document.addEventListener('visibilitychange',()=>refreshController.resume());
-window.addEventListener('beforeunload',()=>refreshController.close());
+document.addEventListener('visibilitychange',()=>{stopDetectionSlides();if(!document.hidden)startDetectionSlides();refreshController.resume();});
+window.addEventListener('beforeunload',()=>{stopDetectionSlides();refreshController.close();});
 hydrate();load();
