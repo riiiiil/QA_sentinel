@@ -159,6 +159,7 @@ class CollectionBackoffTests(unittest.IsolatedAsyncioTestCase):
         app.collection_lock, app.collection_tasks = asyncio.Lock(), set()
         app.collection_status = {'started_at': None, 'finished_at': None, 'total': 0, 'completed': 0, 'results': []}
         self.db = app.database('live')
+        self.db.begin_session(now() - timedelta(minutes=2))
 
     async def asyncTearDown(self):
         for key, value in self.saved.items():
