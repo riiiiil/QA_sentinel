@@ -6,6 +6,7 @@ import io
 import json
 import os
 import logging
+import threading
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -27,6 +28,8 @@ from .notifications import CollectionNotifications
 
 DATA = Path(os.environ.get("QA_SENTINEL_DATA", Path(__file__).resolve().parents[1] / ".sentinel-data"))
 DATABASES = {}
+DATABASES_LOCK = threading.RLock()
+PROGRAM_STARTED_AT = stamp(now())
 collection_lock = asyncio.Lock()
 collection_tasks = set()
 collection_status = {"started_at": None, "finished_at": None, "total": 0, "completed": 0, "results": []}
@@ -64,12 +67,16 @@ async def collection_stream(request):
 def database(mode):
     if mode not in {"demo", "live"}:
         raise HTTPException(400, "모드를 확인해 주세요.")
-    if mode not in DATABASES:
-        db = Database(DATA / f"{mode}.sqlite3")
-        if mode == "demo":
-            db.seed_demo()
-        DATABASES[mode] = db
-    return DATABASES[mode]
+    with DATABASES_LOCK:
+        if mode not in DATABASES:
+            db = Database(DATA / f"{mode}.sqlite3")
+            if mode == "demo":
+                db.seed_demo()
+                db.begin_session(parse_date(db.get("demo_at")) - timedelta(hours=1))
+            else:
+                db.begin_session(parse_date(PROGRAM_STARTED_AT))
+            DATABASES[mode] = db
+        return DATABASES[mode]
 
 
 def collection_candidates(db, due_only=False):
@@ -282,6 +289,11 @@ def health():
 @app.get("/api/state")
 def state(mode: str = "demo"):
     db = database(mode)
+    with db.lock:
+        return state_snapshot(db, mode)
+
+
+def state_snapshot(db, mode):
     at = parse_date(db.get("demo_at")) if mode == "demo" else now()
     detection = db.detect(at)
     sources = db.sources()
@@ -289,9 +301,13 @@ def state(mode: str = "demo"):
         pause = db.site_cooldown(site_domain(source["url"]))
         source["cooldown_until"] = pause["until_at"] if pause else None
         source["cooldown_reason"] = pause["reason"] if pause else None
-    return {"mode": mode, "version": __version__, "offline_test": OFFLINE_TEST, "at": stamp(at), "started_at": db.get("started_at"),
+    scope = db.scope()
+    posts = db.posts()
+    for post in posts:
+        post["in_scope"] = parse_date(scope["start_at"]) <= parse_date(post["published_at"]) <= at
+    return {"mode": mode, "version": __version__, "offline_test": OFFLINE_TEST, "at": stamp(at), "started_at": scope["session_started_at"], "scope": scope,
             "settings": db.get("settings"), "keywords": db.get("keywords"), "sources": sources,
-            "posts": db.posts(), "detection": detection, "events": db.events(),
+            "posts": posts, "detection": detection, "events": db.events(),
             **(collection_snapshot() if mode == "live" else {"server_id": SERVER_ID, "completed_revision": 0, "collecting": False, "collection": None})}
 
 
@@ -307,7 +323,7 @@ async def collection_events(request: Request):
 
 
 class Settings(BaseModel):
-    window_minutes: int = Field(ge=5, le=1440)
+    lookback_minutes: int = Field(default=0, ge=0, le=720)
     warning: int = Field(ge=1, le=100000)
     danger: int = Field(ge=2, le=100000)
     running: bool = True
@@ -324,6 +340,20 @@ def settings(data: Settings, mode: str = "demo"):
     db = database(mode)
     db.put("settings", data.model_dump())
     return {"ok": True}
+
+
+class FeedbackStatus(BaseModel):
+    status: Literal["active", "non_issue", "in_progress", "resolved"]
+
+
+@app.patch("/api/posts/{post_id}/status")
+def feedback_status(post_id: int, data: FeedbackStatus, mode: str = "demo"):
+    db = database(mode)
+    with db.lock:
+        if not db.set_feedback_status(post_id, data.status):
+            raise HTTPException(404, "피드백을 찾을 수 없습니다.")
+        db.detect(parse_date(db.get("demo_at")) if mode == "demo" else None)
+    return {"ok": True, "status": data.status}
 
 
 class Keyword(BaseModel):
@@ -452,6 +482,7 @@ def test_scenario(data: TestScenario):
         db.save_source({"id": "manual-qa", "name": "수동 테스트 채널", "kind": "rss", "url": "https://example.com/manual-qa",
                         "enabled": True, "config": {}})
         count = {"normal": 10, "warning": 3, "danger": 5, "duplicate": 3, "expired": 5}[data.scenario]
+        db.begin_session(at - timedelta(minutes=2))
         posts = [{"title": "오늘 레이드 파티 구해요" if data.scenario == "normal" else "레이드 입장 후 팅김",
                   "body": "사용자가 실행한 격리 수동 테스트용 게시글입니다.",
                   "url": f"https://example.com/manual-qa/{i}",
@@ -495,12 +526,13 @@ def import_posts(data: Import, mode: str = "demo"):
 def export(mode: str = "demo"):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["작성시간", "채널", "제목", "키워드", "URL"])
+    writer.writerow(["작성시간", "채널", "제목", "키워드", "URL", "처리상태"])
     def safe_cell(value):
         value = str(value)
         return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
     for p in database(mode).posts():
         if p["keywords"]:
-            writer.writerow([safe_cell(v) for v in [p["published_at"], p["source_name"], p["title"], ", ".join(p["keywords"]), p["url"]]])
+            label = {"active": "활성", "non_issue": "논이슈", "in_progress": "진행중", "resolved": "처리완료"}[p["feedback_status"]]
+            writer.writerow([safe_cell(v) for v in [p["published_at"], p["source_name"], p["title"], ", ".join(p["keywords"]), p["url"], label]])
     return Response("\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="qa-sentinel-feedback.csv"'})
