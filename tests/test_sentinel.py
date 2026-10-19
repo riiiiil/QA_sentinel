@@ -30,6 +30,7 @@ class EngineTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp.name) / "test.db")
         self.db.save_source(source())
+        self.db.begin_session(AT - timedelta(hours=2))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -57,13 +58,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.db.detect(AT)["count"], 1)
         self.assertEqual(canonical_url("https://example.com/x?b=2&a=1"), "https://example.com/x?a=1&b=2")
 
-    def test_time_window_boundary_and_recovery(self):
-        self.db.ingest("test", [post(1, 30), post(2, 30.1), post(3, 1), post(4, 1)], AT)
+    def test_session_scope_boundary_and_no_time_expiry(self):
+        self.db.begin_session(AT - timedelta(minutes=30))
+        result = self.db.ingest("test", [post(1, 30), post(2, 30.1), post(3, 1), post(4, 1)], AT)
+        self.assertEqual(result["outside_scope"], 1)
         self.assertEqual(self.db.detect(AT)["count"], 3)
-        self.assertEqual(self.db.detect(AT + timedelta(minutes=31))["level"], "normal")
-        self.db.ingest("test", [post(i, -31) for i in range(5, 8)], AT + timedelta(minutes=32))
-        self.assertEqual(self.db.detect(AT + timedelta(minutes=32))["level"], "warning")
-        self.assertEqual(len(self.db.events()), 2)
+        self.assertEqual(self.db.detect(AT + timedelta(hours=13))["level"], "warning")
+        self.assertEqual(len(self.db.events()), 1)
 
     def test_events_are_deduplicated_and_links_are_latest(self):
         self.db.ingest("test", [post(i, i + 1) for i in range(6)], AT)
@@ -94,9 +95,9 @@ class EngineTests(unittest.TestCase):
 
     def test_settings_and_posts_survive_reopen(self):
         self.db.ingest("test", [post(1)], AT)
-        self.db.put("settings", {"window_minutes": 15, "warning": 2, "danger": 4, "running": False})
+        self.db.put("settings", {"lookback_minutes": 15, "warning": 2, "danger": 4, "running": False})
         reopened = Database(self.db.path)
-        self.assertEqual(reopened.get("settings")["window_minutes"], 15)
+        self.assertEqual(reopened.get("settings")["lookback_minutes"], 15)
         self.assertEqual(len(reopened.posts()), 1)
 
 
@@ -162,7 +163,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(live['sources'], [])
 
     def test_threshold_and_duplicate_keyword_validation(self):
-        res = self.client.put('/api/settings', json={"window_minutes": 30, "warning": 5, "danger": 3})
+        res = self.client.put('/api/settings', json={"lookback_minutes": 0, "warning": 5, "danger": 3})
         self.assertEqual(res.status_code, 422)
         res = self.client.put('/api/keywords', json={"keywords": [DEFAULT_KEYWORDS[0], DEFAULT_KEYWORDS[0]]})
         self.assertEqual(res.status_code, 422)
@@ -171,6 +172,7 @@ class APITests(unittest.TestCase):
         src = source()
         self.assertEqual(self.client.put('/api/sources?mode=live', json=src).status_code, 200)
         from qa_sentinel.core import now
+        self.module.database("live").begin_session(now() - timedelta(minutes=1))
         posts = [{**post(i), "published_at": stamp(now() - timedelta(seconds=10))} for i in range(5)]
         data = {"source_id": "test", "posts": posts}
         result = self.client.post('/api/import?mode=live', json=data).json()
@@ -219,7 +221,7 @@ class APITests(unittest.TestCase):
 
     def test_paused_monitoring_never_fetches(self):
         self.client.put('/api/sources?mode=live', json=source())
-        self.client.put('/api/settings?mode=live', json={'window_minutes': 30, 'warning': 3, 'danger': 5, 'running': False})
+        self.client.put('/api/settings?mode=live', json={'lookback_minutes': 0, 'warning': 3, 'danger': 5, 'running': False})
         mock = AsyncMock()
         with patch('qa_sentinel.app.crawl', mock):
             result = self.client.post('/api/collect?mode=live').json()
