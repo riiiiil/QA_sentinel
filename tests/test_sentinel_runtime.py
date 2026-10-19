@@ -45,6 +45,7 @@ class CollectionTests(unittest.IsolatedAsyncioTestCase):
         app.collection_lock, app.collection_tasks = asyncio.Lock(), set()
         app.collection_status = {"started_at": None, "finished_at": None, "total": 0, "completed": 0, "results": []}
         self.db = app.database("live")
+        self.db.begin_session(now() - timedelta(minutes=2))
 
     async def asyncTearDown(self):
         tasks = list(self.app.collection_tasks)
@@ -261,6 +262,7 @@ class LocalStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory)/'test.sqlite3')
             db.save_source(source())
+            db.begin_session(now() - timedelta(minutes=2))
             db.ingest('test', [post(i) for i in range(5)])
             with ThreadPoolExecutor(max_workers=5) as executor:
                 results = list(executor.map(lambda _: db.detect(), range(20)))
