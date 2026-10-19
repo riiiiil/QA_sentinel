@@ -17,7 +17,8 @@ DEFAULT_KEYWORDS = [
     {"name": "접속 불가", "terms": ["접속 불가", "접속불가", "로그인 안됨"], "enabled": True},
     {"name": "팅김", "terms": ["팅김", "튕김", "강제 종료", "crash"], "enabled": True},
 ]
-DEFAULT_SETTINGS = {"window_minutes": 30, "warning": 3, "danger": 5, "running": True}
+DEFAULT_SETTINGS = {"lookback_minutes": 0, "warning": 3, "danger": 5, "running": True}
+FEEDBACK_STATUSES = {"active", "non_issue", "in_progress", "resolved"}
 
 
 def now():
@@ -97,9 +98,17 @@ class Database:
             columns = {row[1] for row in db.execute("PRAGMA table_info(sources)")}
             if "warning" not in columns:
                 db.execute("ALTER TABLE sources ADD COLUMN warning TEXT")
+            post_columns = {row[1] for row in db.execute("PRAGMA table_info(posts)")}
+            if "feedback_status" not in post_columns:
+                db.execute("ALTER TABLE posts ADD COLUMN feedback_status TEXT NOT NULL DEFAULT 'active'")
+            if "status_updated_at" not in post_columns:
+                db.execute("ALTER TABLE posts ADD COLUMN status_updated_at TEXT")
             for key, value in {"settings": DEFAULT_SETTINGS, "keywords": DEFAULT_KEYWORDS,
-                               "started_at": stamp(now()), "last_level": "normal"}.items():
+                               "started_at": stamp(now()), "session_started_at": stamp(now()), "last_level": "normal"}.items():
                 db.execute("INSERT OR IGNORE INTO meta VALUES (?,?)", (key, json.dumps(value, ensure_ascii=False)))
+            old_settings = json.loads(db.execute("SELECT value FROM meta WHERE key='settings'").fetchone()[0])
+            settings = {key: old_settings.get(key, value) for key, value in DEFAULT_SETTINGS.items()}
+            db.execute("UPDATE meta SET value=? WHERE key='settings'", (json.dumps(settings),))
 
     @contextmanager
     def connect(self):
@@ -123,6 +132,28 @@ class Database:
     def put(self, key, value):
         with self.connect() as db:
             db.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, json.dumps(value, ensure_ascii=False)))
+
+    def begin_session(self, at=None):
+        """Start one server run, retaining records, triage and site cooldowns."""
+        with self.lock:
+            self.put("session_started_at", stamp(at or now()))
+            self.put("settings", {**self.get("settings"), "lookback_minutes": 0})
+            self.put("last_level", "normal")
+
+    def scope(self):
+        with self.lock:
+            started = parse_date(self.get("session_started_at"))
+            lookback = self.get("settings").get("lookback_minutes", 0)
+            return {"session_started_at": stamp(started), "start_at": stamp(started - timedelta(minutes=lookback)),
+                    "lookback_minutes": lookback}
+
+    def set_feedback_status(self, post_id, status):
+        if status not in FEEDBACK_STATUSES:
+            raise ValueError("피드백 처리 상태를 확인해 주세요.")
+        with self.connect() as db:
+            changed = db.execute("UPDATE posts SET feedback_status=?,status_updated_at=? WHERE id=?",
+                                 (status, stamp(now()), post_id)).rowcount
+        return bool(changed)
 
     def sources(self):
         with self.connect() as db:
@@ -164,22 +195,34 @@ class Database:
             db.execute("DELETE FROM site_cooldowns WHERE domain=? AND until_at<=?", (domain, stamp(now())))
 
     def ingest(self, source_id, posts, at=None):
+        with self.lock:
+            return self._ingest(source_id, posts, at)
+
+    def _ingest(self, source_id, posts, at=None):
         at = at or now()
-        validated = []
+        start = parse_date(self.scope()["start_at"])
+        validated, outside = [], 0
         for p in posts:
             published = parse_date(p["published_at"])
             if published > at + timedelta(minutes=1):
                 raise ValueError("미래 시각의 게시글은 저장할 수 없습니다.")
             if not p["title"].strip():
                 raise ValueError("게시글 제목이 필요합니다.")
+            url = canonical_url(p["url"])
+            if published < start:
+                outside += 1
+                continue
             validated.append((source_id, p["title"][:1000], "",
-                              stamp(published), canonical_url(p["url"]), stamp(at)))
+                              stamp(published), url, stamp(at)))
         with self.connect() as db:
             inserted = 0
             for row in validated:
                 inserted += db.execute("""INSERT OR IGNORE INTO posts
                     (source_id,title,body,published_at,url,collected_at) VALUES (?,?,?,?,?,?)""", row).rowcount
-        return {"inserted": inserted, "duplicates": len(posts) - inserted}
+        result = {"inserted": inserted, "duplicates": len(validated) - inserted}
+        if outside:
+            result["outside_scope"] = outside
+        return result
 
     def posts(self, start=None, end=None):
         dictionary = self.get("keywords")
@@ -207,9 +250,11 @@ class Database:
     def _detect(self, at=None):
         at = at or now()
         settings = self.get("settings")
-        start = at - timedelta(minutes=settings["window_minutes"])
+        scope = self.scope()
+        start = parse_date(scope["start_at"])
         active = {s["id"] for s in self.sources() if s["enabled"]}
-        recent = [p for p in self.posts(start, at) if p["keywords"] and p["source_id"] in active and start <= parse_date(p["published_at"]) <= at]
+        recent = [p for p in self.posts(start, at) if p["keywords"] and p["source_id"] in active
+                  and p["feedback_status"] == "active" and start <= parse_date(p["published_at"]) <= at]
         current = level(len(recent), settings)
         counts = {}
         for p in recent:
@@ -219,7 +264,7 @@ class Database:
         payload = {"keywords": [{"name": k, "count": n} for k, n in ranked],
                    "channels": sorted({p["source_name"] for p in recent}),
                    "links": [{"title": p["title"], "url": p["url"]} for p in sorted(recent, key=lambda x: (len(x["keywords"]), x["published_at"]), reverse=True)[:3]],
-                   "window_minutes": settings["window_minutes"], "delivery": "not_configured"}
+                   **scope, "delivery": "not_configured"}
         # Serialize transitions so repeated refreshes never generate duplicate events.
         with self.connect() as db:
             previous = json.loads(db.execute("SELECT value FROM meta WHERE key='last_level'").fetchone()[0])
@@ -245,6 +290,7 @@ class Database:
                   "로그인 안됨 저만 그런가요", "업데이트 후 프레임이 조금 좋아졌네요", "오늘 레이드 파티 구해요",
                   "결제 오류 재현 순서 공유합니다", "지역 이동 중 무한로딩 발생", "사전 보상 잘 받았습니다"]
         at = now()
+        self.begin_session(at - timedelta(days=3))
         for i in range(132):
             # Representative fixture, never presented as actual community data.
             age = (i * 1.6 + 1) if i < 24 else (45 + (i - 24) * 12)
@@ -254,4 +300,5 @@ class Database:
                 "published_at": stamp(at - timedelta(minutes=age)), "url": f"https://example.com/sample/{i}"}], at)
         self.put("demo_seeded", True)
         self.put("demo_at", stamp(at))
+        self.begin_session(at - timedelta(hours=1))
         self.detect(at)
