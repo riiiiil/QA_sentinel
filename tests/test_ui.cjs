@@ -23,7 +23,7 @@ vm.createContext(context);
 vm.runInContext(code,context);
 (async()=>{
  await vm.runInContext(`(async()=>{
- state={at:'2026-10-17T12:00:00Z',offline_test:false,settings:{window_minutes:30,warning:3,danger:5,running:true},sources:[{id:'dc',name:'갤러리',kind:'dcinside'},{id:'arca',name:'아카라이브',kind:'arcalive'}],keywords:[{name:'결제',terms:['결제'],enabled:true},{name:'팅김',terms:['팅김'],enabled:true}],events:[],detection:{level:'normal',count:0,keywords:[]},collecting:false,posts:[
+ state={at:'2026-10-17T12:00:00Z',offline_test:false,settings:{lookback_minutes:0,warning:3,danger:5,running:true},sources:[{id:'dc',name:'갤러리',kind:'dcinside'},{id:'arca',name:'아카라이브',kind:'arcalive'}],keywords:[{name:'결제',terms:['결제'],enabled:true},{name:'팅김',terms:['팅김'],enabled:true}],events:[],detection:{level:'normal',count:0,keywords:[]},collecting:false,posts:[
  {id:1,title:'결제 환불 문의',body:'내용',source_id:'dc',source_name:'갤러리',published_at:'2026-10-17T11:59:00Z',keywords:['결제']},
  {id:2,title:'팅김 문의',body:'내용',source_id:'arca',source_name:'아카라이브',published_at:'2026-10-17T11:59:00Z',keywords:['팅김']},
  {id:3,title:'결제와 팅김 문의',body:'내용',source_id:'dc',source_name:'갤러리',published_at:'2026-10-17T11:59:00Z',keywords:['결제','팅김']} ]};
@@ -36,6 +36,17 @@ vm.runInContext(code,context);
  mode='live';state.collection={started_at:'2026-10-17T11:55:00Z',finished_at:'2026-10-17T11:56:00Z',outcome:'completed'};
  assert(heading('테스트','').includes('최근 수집 종료'));assert(!heading('테스트','').includes('마지막 화면 갱신'));
  state.collecting=true;assert(collectionTimeText().includes('수집 진행 중'));state.collecting=false;mode='demo';
+ assert.strictEqual(currentPosts().length,3);
+ state.posts[0].feedback_status='non_issue';state.posts[1].feedback_status='in_progress';state.posts[2].feedback_status='resolved';
+ assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,3);
+ for(const status of ['non_issue','in_progress','resolved']){reviewFilter=status;assert.strictEqual(filteredPosts().length,1);}
+ reviewFilter='all';state.posts[0].feedback_status='active';assert.strictEqual(currentPosts().length,1);
+ state.posts[0].in_scope=false;assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,2);
+ historyFilter='all';assert.strictEqual(feedbackPosts().length,3);assert(postDetectionBadge(state.posts[0]).includes('범위 밖'));
+ historyFilter='session';for(const p of state.posts){p.feedback_status='active';p.in_scope=true;}
+ assert(feedbackCard().includes('id="review-filter"'));assert(feedbackCard().includes('id="history-filter"'));
+ assert(settingsView().includes('name="lookback_minutes"'));assert(settingsView().includes('max="720"'));assert(!settingsView().includes('name="window_minutes"'));
+ assert(detectionSlide({name:'결제',count:5,level:'danger'},0,1).includes('이번 실행 누적'));
  sourceModal();assert.strictEqual(modal.nativeModalCalls,1);assert.strictEqual(modal.dataset.lockBackdrop,'true');assert(document.documentElement.classList.contains('modal-open'));
  assert(modal.innerHTML.includes('value="arcalive"'));assert(modal.innerHTML.includes('아카라이브'));
  assert(!modal.innerHTML.includes('name="body_selector"'));assert(modal.innerHTML.includes('목록 행 내부 작성 시각'));
