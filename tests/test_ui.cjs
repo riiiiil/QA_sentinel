@@ -23,7 +23,7 @@ vm.createContext(context);
 vm.runInContext(code,context);
 (async()=>{
  await vm.runInContext(`(async()=>{
- assert.strictEqual(range,0);
+ assert.strictEqual(range,0);assert.strictEqual(historyFilter,'all');
  state={started_at:'2026-10-17T11:00:00Z',scope:{start_at:'2026-10-17T11:00:00Z'},at:'2026-10-17T12:00:00Z',offline_test:false,settings:{lookback_minutes:0,warning:3,danger:5,running:true},sources:[{id:'dc',name:'갤러리',kind:'dcinside'},{id:'arca',name:'아카라이브',kind:'arcalive'}],keywords:[{name:'결제',terms:['결제'],enabled:true},{name:'팅김',terms:['팅김'],enabled:true}],events:[],detection:{level:'normal',count:0,keywords:[]},collecting:false,posts:[
  {id:1,title:'결제 환불 문의',body:'내용',source_id:'dc',source_name:'갤러리',published_at:'2026-10-17T11:59:00Z',keywords:['결제']},
  {id:2,title:'팅김 문의',body:'내용',source_id:'arca',source_name:'아카라이브',published_at:'2026-10-17T11:59:00Z',keywords:['팅김']},
@@ -43,9 +43,10 @@ vm.runInContext(code,context);
  assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,3);
  for(const status of ['non_issue','in_progress','resolved']){reviewFilter=status;assert.strictEqual(filteredPosts().length,1);}
  reviewFilter='all';state.posts[0].feedback_status='active';assert.strictEqual(currentPosts().length,1);
- state.posts[0].in_scope=false;assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,2);
+ state.posts[0].in_scope=false;assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,3);
+ historyFilter='session';assert.strictEqual(feedbackPosts().length,2);
  historyFilter='all';assert.strictEqual(feedbackPosts().length,3);assert(postDetectionBadge(state.posts[0]).includes('범위 밖'));
- historyFilter='session';for(const p of state.posts){p.feedback_status='active';p.in_scope=true;}
+ historyFilter='all';for(const p of state.posts){p.feedback_status='active';p.in_scope=true;}
  assert(feedbackCard().includes('id="review-filter"'));assert(feedbackCard().includes('id="history-filter"'));
  assert(settingsView().includes('name="lookback_minutes"'));assert(settingsView().includes('max="720"'));assert(!settingsView().includes('name="window_minutes"'));
  assert(detectionSlide({name:'결제',count:5,level:'danger'},0,1).includes('이번 실행 누적'));
@@ -73,5 +74,13 @@ vm.runInContext(code,context);
  vm.runInContext("state.keywords.push({name:'<script>',terms:['x'],enabled:true});keyword='<script>';",context);
  const html=vm.runInContext('feedbackCard()',context);assert(html.includes('&lt;script&gt;'));assert(!html.includes('<script>'));
  await vm.runInContext("api=async()=>({...state,keywords:[]});load(false);",context);assert.strictEqual(vm.runInContext('keyword',context),'');
+ await vm.runInContext(`(async()=>{
+ const savedLoad=load,savedState=state;let loads=0,reconnects=0;
+ load=async()=>{loads++;};refreshController={reconnect:async()=>{reconnects++;}};
+ state=null;loading=false;await recoverConnection();assert.strictEqual(loads,1);assert.strictEqual(reconnects,0);
+ loading=true;await recoverConnection();assert.strictEqual(loads,1);
+ loading=false;state=savedState;await recoverConnection();assert.strictEqual(reconnects,1);assert.strictEqual(loads,1);
+ load=savedLoad;refreshController=null;
+ })()`,context);
  console.log('PASS: native channel modal, title-only search, 15-minute collection label, three listing selectors, keyword dropdown + combined filters, Arca picker and deleted-keyword cleanup.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
