@@ -10,7 +10,7 @@ function storageSet(key,value){try{localStorage.setItem(key,value);}catch{}}
 const labels={dashboard:'대시보드',feedback:'유저 피드백',channels:'수집 채널',dictionary:'키워드 사전',events:'감지 기록',settings:'모니터링 설정'};
 const feedbackStatuses={active:'활성',non_issue:'논이슈',in_progress:'진행중',resolved:'처리완료'};
 const levels={normal:'정상',warning:'주의',danger:'위험'};
-let state=null, page='dashboard', mode=storageGet('sentinel-mode')||'demo', range=0, search='', filter='all', channel='', keyword='', tablePage=1, reviewFilter='all', historyFilter='session', toastTimer, busy=false, loadSequence=0, loading=false, refreshController=null;
+let state=null, page='dashboard', mode=storageGet('sentinel-mode')||'demo', range=0, search='', filter='all', channel='', keyword='', tablePage=1, reviewFilter='all', historyFilter='all', toastTimer, busy=false, loadSequence=0, loading=false, refreshController=null, collectionConnectionLost=false, checkingCollection=false;
 if(!['demo','live'].includes(mode))mode='demo';
 const main=$('#main'),modal=$('#modal');
 function hydrate(root=document){$$('[data-icon]',root).forEach(el=>el.innerHTML=icon(el.dataset.icon));}
@@ -19,7 +19,7 @@ function time(value,style='short'){if(!value)return '아직 없음';const d=new 
 function ago(value){const minutes=Math.floor((new Date(state.at)-new Date(value))/60000);if(minutes<1)return '방금 전';if(minutes<60)return `${minutes}분 전`;if(minutes<1440)return `${Math.floor(minutes/60)}시간 전`;return time(value,'full');}
 async function api(path,method='GET',data){
  const controller=new AbortController();
- const timer=setTimeout(()=>controller.abort(),path.includes('/api/import')?60000:15000);
+ const timer=setTimeout(()=>controller.abort(),path.includes('/api/import')?60000:path.startsWith('/api/collection')?5000:15000);
  try{
   const res=await fetch(`${path}${path.includes('?')?'&':'?'}mode=${mode}`,{method,signal:controller.signal,headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined});
   if(!res.ok){let msg='요청을 처리하지 못했습니다.';try{const result=await res.json();msg=typeof result.detail==='string'?result.detail:result.detail?.map(x=>x.msg.replace(/^Value error, /,'')).join('\n')||msg;}catch{}throw Error(msg);}
@@ -31,38 +31,50 @@ async function load(renderPage=true){
  const sequence=++loadSequence;loading=true;
  try{
   const next=await api('/api/state');if(sequence!==loadSequence)return;
-  const previous=state;state=next;if(keyword&&!state.keywords.some(k=>k.name===keyword))keyword='';refreshController?.baseline(next);
+  const previous=state;state=next;collectionConnectionLost=false;if(keyword&&!state.keywords.some(k=>k.name===keyword))keyword='';refreshController?.baseline(next);
   const connection=$('#connection-status');if(connection){connection.className='connection-status connected';connection.textContent=state.offline_test?'수동 테스트 모드':'로컬 서버 연결됨';}
   if(renderPage)render();
-  $('#feedback-count').textContent=number(currentPosts().length);
+  $('#feedback-count').textContent=number(state.posts.filter(p=>p.keywords.length).length);
   $('#mini-status').textContent=state.offline_test?'수동 테스트 · 외부 수집 중지':mode==='demo'?'샘플 데이터 보기':state.settings.running?'모니터링 활성화':'모니터링 일시정지';
   if(previous?.mode==='live'&&!state.collecting&&mode==='live'&&state.completed_revision>previous.completed_revision&&state.collection?.results?.length){const results=state.collection.results;const failed=results.filter(r=>r.error).length,partial=results.filter(r=>r.warning).length;toast(failed?`수집 완료 · ${failed}개 채널 실패. 수집 채널에서 원인을 확인하세요.`:partial?`수집 완료 · ${partial}개 채널에서 일부 글이 제외되었습니다.`:'수집이 완료되었습니다.');}
   return next;
- }catch(err){if(sequence!==loadSequence)return;const connection=$('#connection-status');if(connection){connection.className='connection-status disconnected';connection.textContent='서버 연결 끊김';}if(!state)main.innerHTML=`<div class="empty">${icon('alert')}<strong>서버에 연결할 수 없습니다</strong><p>${e(err.message)}</p><button class="btn" data-action="reload">다시 시도</button></div>`;else toast(err.message);}
+ }catch(err){if(sequence!==loadSequence)return;collectionConnectionLost=true;updateCollectionControls();const connection=$('#connection-status');if(connection){connection.className='connection-status disconnected';connection.textContent='서버 연결 끊김';}if(!state)main.innerHTML=`<div class="empty">${icon('alert')}<strong>서버에 연결할 수 없습니다</strong><p>${e(err.message)}</p><button class="btn" data-action="reload">다시 시도</button></div>`;else toast(err.message);}
  finally{if(sequence===loadSequence){loading=false;void refreshController?.flush();}}
 }
 function heading(title,description,action='',eyebrow='COMMUNITY MONITORING'){return `<div class="page-heading"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p>${description}</p></div><div class="heading-actions">${state.offline_test?`<button class="btn" data-action="test-scenarios">${icon('check')}수동 테스트</button>`:''}<select class="mode-select" id="mode" aria-label="데이터 모드"><option value="demo" ${mode==='demo'?'selected':''}>샘플 데이터</option><option value="live" ${mode==='live'?'selected':''}>실제 수집</option></select>${action}</div></div>${mode==='demo'?`<div class="demo-note"><span><span class="demo-pill">DEMO</span><strong>기능을 살펴볼 수 있는 샘플 데이터입니다.</strong> 실제 커뮤니티에서 수집한 글이 아닙니다.</span><span>기준 시각 ${time(state.at,'full')}</span></div>`:`<div class="demo-note"><span><span class="pulse-dot"></span>서버가 실행되는 동안 활성 채널을 15분마다 수집합니다.</span><span class="collection-time" data-collection-time>${collectionTimeText()}</span></div>`}`;}
 function collectionTimeText(){
  const c=state?.collection;
  if(state?.collecting)return `수집 진행 중 ${c?.completed||0}/${c?.total||0} · 시작 ${time(c?.started_at,'full')}`;
- if(c?.finished_at)return `최근 수집 ${c.outcome==='interrupted'?'중단':'종료'} ${time(c.finished_at,'full')}`;
+ if(c?.finished_at)return `최근 수집 ${({interrupted:'중단',timed_out:'시간 초과',failed:'실패',partial:'일부 실패'})[c.outcome]||'종료'} ${time(c.finished_at,'full')}`;
  const last=state?.sources?.map(s=>s.last_attempt).filter(Boolean).sort().at(-1);
  return last?`최근 채널 수집 시도 ${time(last,'full')}`:'아직 수집한 기록이 없습니다.';
 }
+function updateCollectionControls(){
+ if(!state)return;
+ $$('[data-action="collect"],[data-action="reconcile"]').forEach(button=>button.outerHTML=collectButton());
+ $$('[data-collection-time]').forEach(el=>el.textContent=collectionConnectionLost?'수집 진행 상태를 확인할 수 없습니다. 다시 확인해 주세요.':collectionTimeText());
+}
 function updateCollectionProgress(snapshot){
  if(!state||mode!=='live')return;
- state.collecting=snapshot.collecting;state.collection=snapshot.collection;
- $$('[data-collection-time]').forEach(el=>el.textContent=collectionTimeText());
- $$('[data-action="collect"]').forEach(button=>{
-  const working=busy||state.collecting;button.disabled=working;
-  button.innerHTML=working?`<span class="spinner"></span>수집 중 ${state.collection?.completed||0}/${state.collection?.total||0}`:`${icon('refresh')}지금 수집`;
- });
+ collectionConnectionLost=false;state.collecting=snapshot.collecting;state.collection=snapshot.collection;
+ updateCollectionControls();
  $('#mini-status').textContent=state.collecting?'수집 진행 중':state.offline_test?'수동 테스트 · 외부 수집 중지':state.settings.running?'모니터링 활성화':'모니터링 일시정지';
 }
 function updateConnection(connected){
+ collectionConnectionLost=!connected;updateCollectionControls();
  const el=$('#connection-status');if(!el)return;
  el.className='connection-status '+(connected?'connected':'disconnected');
- el.textContent=connected?(state?.offline_test?'수동 테스트 모드':'로컬 서버 연결됨'):'자동 반영 연결 끊김 · 재연결 중';
+ el.textContent=connected?(state?.offline_test?'수동 테스트 모드':'로컬 서버 연결됨'):'진행 상태 확인 불가 · 재연결 중';
+}
+async function recoverConnection(){
+ if(!state){if(!loading)await load();return;}
+ await refreshController.reconnect();
+}
+function collectionNotice(){
+ const c=state.collection;if(!c?.finished_at||!c.results?.length)return '';
+ const succeeded=c.succeeded??c.results.filter(r=>'inserted' in r).length,failed=c.failed??c.results.filter(r=>r.error).length,skipped=c.skipped??c.results.filter(r=>r.skipped).length;
+ const reason=c.stop_reason||c.results.find(r=>r.error)?.error;
+ return `<div class="collection-result ${reason?'has-error':''}" role="status"><strong>최근 수집 · 완료 ${succeeded}개 · 실패 ${failed}개 · 건너뜀 ${skipped}개</strong>${reason?`<span>${e(reason)}</span>`:''}${c.retry_after&&new Date(c.retry_after)>new Date(state.at)?`<span>다음 수집은 ${time(c.retry_after,'full')} 이후에 가능합니다. 사이트별 대기 시간이 더 길 수 있습니다.</span>`:''}<a href="#channels">채널별 결과 확인 →</a></div>`;
 }
 function isCounted(p){return p.keywords.length&&p.in_scope!==false&&(p.feedback_status||'active')==='active'&&state.sources.some(s=>s.id===p.source_id&&s.enabled!==false);}
 function currentPosts(){return state.posts.filter(isCounted);}
@@ -75,7 +87,7 @@ function badge(level){return `<span class="level-badge ${level}">${levels[level]
 function sourceBadge(p){const src=state.sources.find(s=>s.id===p.source_id);return `<span class="source-badge"><span class="source-mark ${src?.kind||''}">${src?.kind==='dcinside'?'D':src?.kind==='arcalive'?'A':src?.kind==='html'?'N':'C'}</span>${e(p.source_name)}</span>`;}
 function statusFor(p){const k=p.keywords.map(name=>state.detection.keywords.find(k=>k.name===name)?.count||0);const n=Math.max(0,...k);return n>=state.settings.danger?'danger':n>=state.settings.warning?'warning':'normal';}
 function pauseButton(){return `<button class="btn" data-action="pause">${icon(state.settings.running?'pause':'play')}${state.settings.running?'일시정지':'모니터링 시작'}</button>`;}
-function collectButton(){const working=busy||(mode==='live'&&state.collecting);const progress=working&&state.collection?.total?` ${state.collection.completed}/${state.collection.total}`:'';return `<button class="btn primary" data-action="collect" ${working?'disabled':''}>${working?'<span class="spinner"></span>':icon('refresh')}${working?'수집 중'+progress:'지금 수집'}</button>`;}
+function collectButton(){if(mode==='live'&&collectionConnectionLost)return `<button class="btn" data-action="reconcile" ${checkingCollection?'disabled':''}>${icon('refresh')}${checkingCollection?'상태 확인 중':'진행 상태 다시 확인'}</button>`;const working=busy||(mode==='live'&&state.collecting);const progress=working&&state.collection?.total?` ${state.collection.completed}/${state.collection.total}`:'';return `<button class="btn primary" data-action="collect" ${working?'disabled':''}>${working?'<span class="spinner"></span>':icon('refresh')}${working?'수집 중'+progress:'지금 수집'}</button>`;}
 let detectionSlideTimer=null,detectionSlideAnimation=null;
 function alertKeywords(){return state.detection.keywords.map(k=>({...k,level:k.count>=state.settings.danger?'danger':k.count>=state.settings.warning?'warning':'normal'})).filter(k=>k.level!=='normal').sort((a,b)=>(b.level==='danger')-(a.level==='danger')||b.count-a.count||a.name.localeCompare(b.name,'ko'));}
 function detectionSlide(item,index,total){return `<div class="detection-slide"><div class="detection-slide-heading">${badge(item.level)}<span>${number(item.count)}건</span></div><strong class="detection-keyword" title="${e(item.name)}">${e(item.name)}</strong><div class="detection-slide-caption"><span>${scopeLabel()}</span>${total>1?`<span>${index+1} / ${total}</span>`:''}</div></div>`;}
@@ -103,7 +115,7 @@ function render(){page=location.hash.slice(1)||'dashboard';if(!labels[page])page
 stopDetectionSlides();const views={dashboard:dashboardView,feedback:feedbackView,channels:channelsView,dictionary:dictionaryView,events:eventsView,settings:settingsView};main.innerHTML=views[page]();hydrate(main);if(page==='dashboard'){drawChart();startDetectionSlides();}if(page==='dashboard'||page==='feedback')renderTable();}
 function sitePauseNotice(){const paused=state.sources.filter(s=>s.enabled&&s.cooldown_until);if(mode!=='live'||!paused.length)return '';return `<div class="warning-note site-pause-notice" role="status"><strong>${paused.length}개 채널의 사이트 수집이 자동 대기 중입니다.</strong> 대기 중에는 새 글을 확인할 수 없습니다. <a href="#channels">재시도 시각 확인 →</a></div>`;}
 function dashboardView(){const s=state.settings,d=state.detection,matched=currentPosts(),active=state.sources.filter(s=>s.enabled),at=new Date(state.at);const lastHour=matched.filter(p=>at-new Date(p.published_at)<=3600000).length;
-return heading('커뮤니티 모니터링','유저의 목소리에서, 가장 먼저 발견하는 버그 신호.',pauseButton()+collectButton())+sitePauseNotice()+`<div class="scope-note"><strong>${scopeLabel()}</strong><span>프로그램 시작 ${time(state.scope?.session_started_at||state.started_at,'full')}</span><span>집계 시작 ${time(state.scope?.start_at||state.started_at,'full')}</span><a href="#settings">수집 시작점 설정 →</a></div>`+
+return heading('커뮤니티 모니터링','유저의 목소리에서, 가장 먼저 발견하는 버그 신호.',pauseButton()+collectButton())+sitePauseNotice()+collectionNotice()+`<div class="scope-note"><strong>${scopeLabel()}</strong><span>프로그램 시작 ${time(state.scope?.session_started_at||state.started_at,'full')}</span><span>집계 시작 ${time(state.scope?.start_at||state.started_at,'full')}</span><a href="#settings">수집 시작점 설정 →</a></div>`+
 `<div class="status-banner ${d.level}"><span class="status-icon">${icon(d.level==='normal'?'shield':'alert')}</span><div><h3>${d.level==='normal'?'현재 커뮤니티에서 특이 동향이 감지되지 않았습니다.':`누적 ${number(d.count)}건의 버그 신호가 감지되었습니다.`}</h3><p>${d.level==='normal'?'키워드와 감지 기준을 설정하고 커뮤니티의 변화를 확인하세요.':`${d.keywords.slice(0,3).map(k=>e(k.name)).join(' · ')} 관련 피드백을 우선 확인해 주세요.`}</p></div><a class="banner-action" href="#feedback">피드백 확인 ${icon('arrow')}</a></div>
 <div class="metric-grid">
 ${metric('이번 범위 게시글',number(state.posts.filter(p=>p.in_scope!==false).length),'<small>건</small>',`${icon('check')} <span class="green">중복 URL 제외</span><span>· 비활성 글 포함</span>`,'file')}
@@ -143,7 +155,7 @@ function drawChart(){
  const tip=$('.chart-tooltip',root),show=(el,event)=>{tip.textContent=el.dataset.tooltip;tip.style.display='block';const rect=root.getBoundingClientRect(),point=event?.clientX??(el.getBoundingClientRect().left+el.getBoundingClientRect().width/2);tip.style.left=Math.max(8,Math.min(point-rect.left+8,(root.clientWidth||W)-tip.offsetWidth-8))+'px';tip.style.top='22px';};
  $$('.chart-hit',root).forEach(el=>{el.addEventListener('pointermove',event=>show(el,event));el.addEventListener('pointerleave',()=>{if(document.activeElement!==el)tip.style.display='none';});el.addEventListener('click',event=>show(el,event));el.addEventListener('focus',()=>show(el));el.addEventListener('blur',()=>tip.style.display='none');el.addEventListener('keydown',event=>{if(event.key==='Escape')tip.style.display='none';if(event.key==='Enter'||event.key===' '){event.preventDefault();show(el);}});});
 }
-function feedbackCard(compact=false){const matched=feedbackPosts();return `<section class="card table-card"><div class="card-header"><h2 class="card-title">${icon('message')}${compact?'최근 피드백':'유저 피드백'}<span class="sub-count">${number(matched.length)}건</span></h2><span class="live-label">${mode==='demo'?'샘플 피드백':'수집 완료 시 반영'}</span></div><div class="feedback-help">논이슈·진행중·처리완료는 경고·키워드 순위·그래프에서 제외합니다. 활성으로 되돌리면 다시 집계합니다.</div><div class="table-toolbar"><div class="tabs" aria-label="피드백 상태"><button class="tab ${filter==='all'?'active':''}" data-action="filter" data-value="all">전체 <small>${matched.length}</small></button><button class="tab ${filter==='danger'?'active':''}" data-action="filter" data-value="danger">위험 키워드</button><button class="tab ${filter==='warning'?'active':''}" data-action="filter" data-value="warning">주의 키워드</button></div><div class="table-controls"><label class="searchbox">${icon('search')}<input id="post-search" type="search" placeholder="피드백 검색" aria-label="제목 검색" value="${e(search)}"></label><select id="channel-filter" aria-label="채널 필터"><option value="">모든 채널</option>${state.sources.map(s=>`<option value="${e(s.id)}" ${channel===s.id?'selected':''}>${e(s.name)}</option>`).join('')}</select><select id="keyword-filter" aria-label="키워드 필터"><option value="">모든 키워드</option>${state.keywords.map(k=>`<option value="${e(k.name)}" ${keyword===k.name?'selected':''}>${e(k.name)}${k.enabled?'':' · 비활성'}</option>`).join('')}</select><select id="review-filter" aria-label="처리 상태 필터"><option value="all">모든 처리 상태</option>${Object.entries(feedbackStatuses).map(([v,n])=>`<option value="${v}" ${reviewFilter===v?'selected':''}>${n}</option>`).join('')}</select><select id="history-filter" aria-label="기록 범위"><option value="session" ${historyFilter==='session'?'selected':''}>이번 실행 범위</option><option value="all" ${historyFilter==='all'?'selected':''}>모든 보관 기록</option></select></div></div><div id="table-content"></div></section>`;}
+function feedbackCard(compact=false){const matched=feedbackPosts();return `<section class="card table-card"><div class="card-header"><h2 class="card-title">${icon('message')}${compact?'최근 피드백':'유저 피드백'}<span class="sub-count">${number(matched.length)}건</span></h2><span class="live-label">${mode==='demo'?'샘플 피드백':'수집 완료 시 반영'}</span></div><div class="feedback-help">기본 목록에는 이전 실행의 보관 글도 표시합니다. 집계 시작점 이전 글은 ‘범위 밖’으로 표시하고 이번 집계에서 제외합니다.<br>논이슈·진행중·처리완료는 경고·키워드 순위·그래프에서 제외합니다. 활성으로 되돌리면 다시 집계합니다.</div><div class="table-toolbar"><div class="tabs" aria-label="피드백 상태"><button class="tab ${filter==='all'?'active':''}" data-action="filter" data-value="all">전체 <small>${matched.length}</small></button><button class="tab ${filter==='danger'?'active':''}" data-action="filter" data-value="danger">위험 키워드</button><button class="tab ${filter==='warning'?'active':''}" data-action="filter" data-value="warning">주의 키워드</button></div><div class="table-controls"><label class="searchbox">${icon('search')}<input id="post-search" type="search" placeholder="피드백 검색" aria-label="제목 검색" value="${e(search)}"></label><select id="channel-filter" aria-label="채널 필터"><option value="">모든 채널</option>${state.sources.map(s=>`<option value="${e(s.id)}" ${channel===s.id?'selected':''}>${e(s.name)}</option>`).join('')}</select><select id="keyword-filter" aria-label="키워드 필터"><option value="">모든 키워드</option>${state.keywords.map(k=>`<option value="${e(k.name)}" ${keyword===k.name?'selected':''}>${e(k.name)}${k.enabled?'':' · 비활성'}</option>`).join('')}</select><select id="review-filter" aria-label="처리 상태 필터"><option value="all">모든 처리 상태</option>${Object.entries(feedbackStatuses).map(([v,n])=>`<option value="${v}" ${reviewFilter===v?'selected':''}>${n}</option>`).join('')}</select><select id="history-filter" aria-label="기록 범위"><option value="session" ${historyFilter==='session'?'selected':''}>이번 실행 범위</option><option value="all" ${historyFilter==='all'?'selected':''}>모든 보관 기록</option></select></div></div><div id="table-content"></div></section>`;}
 
 function filteredPosts(){return feedbackPosts().filter(p=>(reviewFilter==='all'||(p.feedback_status||'active')===reviewFilter)&&(!channel||p.source_id===channel)&&(!keyword||p.keywords.includes(keyword))&&(filter==='all'||isCounted(p)&&statusFor(p)===filter)&&(!search||p.title.toLocaleLowerCase().includes(search.toLocaleLowerCase())));}
 function markedTitle(p){const terms=state.keywords.filter(k=>p.keywords.includes(k.name)).flatMap(k=>k.terms).sort((a,b)=>b.length-a.length);if(!terms.length)return e(p.title);const escaped=terms.map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));const re=new RegExp('('+escaped.join('|')+')','gi');return p.title.split(re).map((x,i)=>i%2?`<mark>${e(x)}</mark>`:e(x)).join('');}
@@ -179,12 +191,13 @@ case 'reload':await load();break;
 case 'range':range=Number(value);render();break;
 case 'pause':await api('/api/settings','PUT',{...state.settings,running:!state.settings.running});await load();toast(state.settings.running?'자동 모니터링을 시작했습니다.':'자동 모니터링을 일시정지했습니다.');break;
 case 'test-scenarios':testScenarioModal();break;
-case 'collect':if(mode==='demo'){toast('샘플 모드입니다. 실제 수집 모드에서 채널을 등록해 주세요.');break;}busy=true;render();try{const result=await api('/api/collect?background=true','POST');await load();toast(result.message);}finally{busy=false;void refreshController?.resume();render();}break;
+case 'reconcile':checkingCollection=true;updateCollectionControls();try{await refreshController.reconcile();}finally{checkingCollection=false;updateCollectionControls();}break;
+case 'collect':if(mode==='demo'){toast('샘플 모드입니다. 실제 수집 모드에서 채널을 등록해 주세요.');break;}busy=true;render();try{const result=await api('/api/collect?background=true','POST');await load();toast(result.message);}catch(error){updateConnection(false);await refreshController.reconcile();throw error;}finally{busy=false;void refreshController?.resume();render();}break;
 case 'filter':filter=value;tablePage=1;render();break;
 case 'table-page':tablePage=Number(value);renderTable();break;
 case 'table-prev':tablePage=Math.max(1,tablePage-1);renderTable();break;
 case 'table-next':tablePage++;renderTable();break;
-case 'clear-filters':reviewFilter='all';historyFilter='session';search='';channel='';keyword='';filter='all';tablePage=1;render();break;
+case 'clear-filters':reviewFilter='all';historyFilter='all';search='';channel='';keyword='';filter='all';tablePage=1;render();break;
 case 'keyword-filter':keyword=value;filter='all';search='';channel='';tablePage=1;location.hash='feedback';if(page==='feedback')render();break;
 case 'clear-keyword':keyword='';tablePage=1;render();break;
 case 'add-keyword':keywordModal();break;
@@ -199,7 +212,7 @@ case 'detail':detailModal(id);break;
 case 'close-modal':modal.close();break;
 case 'import':importModal();break;
 }}catch(err){toast(err.message);}});
-document.addEventListener('change',async ev=>{const el=ev.target;try{if(el.id==='mode'){range=0;reviewFilter='all';historyFilter='session';mode=el.value;storageSet('sentinel-mode',mode);search='';filter='all';keyword='';channel='';tablePage=1;await load();}if(el.id==='review-filter'){reviewFilter=el.value;tablePage=1;renderTable();}if(el.id==='history-filter'){historyFilter=el.value;tablePage=1;render();}if(el.dataset.change==='feedback-status'){el.disabled=true;try{await api('/api/posts/'+encodeURIComponent(el.dataset.id)+'/status','PATCH',{status:el.value});await load();const p=state.posts.find(p=>String(p.id)===el.dataset.id);if(p){const note=$('.detail-status-note',modal);if(note)note.textContent=isCounted(p)?'현재 집계에 포함됩니다.':'현재 집계에서 제외됩니다.';}toast(el.value==='active'?'활성으로 변경했습니다. 집계 범위의 글은 다시 반영됩니다.':feedbackStatuses[el.value]+'로 변경하고 집계에서 제외했습니다.');}finally{el.disabled=false;}}if(el.id==='channel-filter'){channel=el.value;tablePage=1;renderTable();}if(el.id==='source-kind')updateSourceKind();if(el.id==='keyword-filter'){keyword=el.value;tablePage=1;renderTable();}if(el.dataset.change==='keyword-toggle'){const items=state.keywords.map((k,i)=>({...k,enabled:i===Number(el.dataset.value)?el.checked:k.enabled}));await saveKeywords(items);toast('키워드 활성 상태를 변경했습니다.');}if(el.dataset.change==='source-toggle'){const source=state.sources.find(s=>s.id===el.dataset.value);await api('/api/sources','PUT',{...source,enabled:el.checked});await load();toast('채널 활성 상태를 변경했습니다.');}}catch(err){toast(err.message);await load();}});
+document.addEventListener('change',async ev=>{const el=ev.target;try{if(el.id==='mode'){range=0;reviewFilter='all';historyFilter='all';mode=el.value;storageSet('sentinel-mode',mode);search='';filter='all';keyword='';channel='';tablePage=1;await load();}if(el.id==='review-filter'){reviewFilter=el.value;tablePage=1;renderTable();}if(el.id==='history-filter'){historyFilter=el.value;tablePage=1;render();}if(el.dataset.change==='feedback-status'){el.disabled=true;try{await api('/api/posts/'+encodeURIComponent(el.dataset.id)+'/status','PATCH',{status:el.value});await load();const p=state.posts.find(p=>String(p.id)===el.dataset.id);if(p){const note=$('.detail-status-note',modal);if(note)note.textContent=isCounted(p)?'현재 집계에 포함됩니다.':'현재 집계에서 제외됩니다.';}toast(el.value==='active'?'활성으로 변경했습니다. 집계 범위의 글은 다시 반영됩니다.':feedbackStatuses[el.value]+'로 변경하고 집계에서 제외했습니다.');}finally{el.disabled=false;}}if(el.id==='channel-filter'){channel=el.value;tablePage=1;renderTable();}if(el.id==='source-kind')updateSourceKind();if(el.id==='keyword-filter'){keyword=el.value;tablePage=1;renderTable();}if(el.dataset.change==='keyword-toggle'){const items=state.keywords.map((k,i)=>({...k,enabled:i===Number(el.dataset.value)?el.checked:k.enabled}));await saveKeywords(items);toast('키워드 활성 상태를 변경했습니다.');}if(el.dataset.change==='source-toggle'){const source=state.sources.find(s=>s.id===el.dataset.value);await api('/api/sources','PUT',{...source,enabled:el.checked});await load();toast('채널 활성 상태를 변경했습니다.');}}catch(err){toast(err.message);await load();}});
 document.addEventListener('input',ev=>{if(ev.target.name==='lookback_minutes'){const minutes=Number(ev.target.value);const preview=$('#scope-preview');if(preview&&Number.isInteger(minutes)&&minutes>=0&&minutes<=720)preview.textContent='집계 시작 '+time(new Date(new Date(state.started_at).getTime()-minutes*60000),'full');}if(ev.target.id==='post-search'){search=ev.target.value;tablePage=1;renderTable();}});
 document.addEventListener('submit',async ev=>{const form=ev.target;if(!['settings-form','keyword-form','source-form','import-form','test-scenario-form'].includes(form.id))return;ev.preventDefault();const data=new FormData(form),error=$('.form-error',form),submit=$('[type="submit"]',form);error.textContent='';submit.disabled=true;try{if(form.id==='settings-form'){await api('/api/settings','PUT',{lookback_minutes:Number(data.get('lookback_minutes')),warning:Number(data.get('warning')),danger:Number(data.get('danger')),running:data.has('running')});await load();toast('모니터링 설정을 저장했습니다.');}
 if(form.id==='keyword-form'){const items=state.keywords.map(k=>({...k})),index=form.dataset.index;const item={name:data.get('name').trim(),terms:data.get('terms').split(/[,\n]/).map(t=>t.trim()).filter(Boolean),enabled:index===''?true:items[Number(index)].enabled};if(index==='')items.push(item);else items[Number(index)]=item;await saveKeywords(items);modal.close();toast('키워드를 저장하고 기존 글을 다시 필터링했습니다.');}
@@ -219,12 +232,14 @@ window.addEventListener('resize',()=>{clearTimeout(chartResizeTimer);chartResize
 refreshController=new CollectionRefresh({
  openStream:url=>new EventSource(url),
  readProgress:()=>api('/api/collection'),reload:()=>load(),
- canPoll:()=>!document.hidden,
+ canPoll:()=>!document.hidden&&navigator.onLine!==false,
  canRefresh:()=>!document.hidden&&!modal.open&&!busy&&!loading&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName),
  onProgress:updateCollectionProgress,onConnection:updateConnection,
  onDeferred:()=>{if(modal.open||['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))$('#connection-status').textContent='새 수집 결과 대기 · 입력 후 반영';},
 });
+window.addEventListener('offline',()=>refreshController.disconnect());
+window.addEventListener('online',()=>{void recoverConnection();});
 document.addEventListener('focusout',()=>setTimeout(()=>refreshController.resume(),0));
-document.addEventListener('visibilitychange',()=>{stopDetectionSlides();if(!document.hidden)startDetectionSlides();refreshController.resume();});
+document.addEventListener('visibilitychange',()=>{stopDetectionSlides();if(!document.hidden){startDetectionSlides();if(!state){void recoverConnection();return;}if(collectionConnectionLost){void refreshController.reconcile();return;}}refreshController.resume();});
 window.addEventListener('beforeunload',()=>{stopDetectionSlides();refreshController.close();});
 hydrate();load();
