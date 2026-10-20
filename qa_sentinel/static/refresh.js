@@ -7,6 +7,7 @@
    this.setTimer=options.setTimer||((fn,ms)=>setTimeout(fn,ms));this.clearTimer=options.clearTimer||(id=>clearTimeout(id));
    this.mode=null;this.generation=0;this.source=null;this.timer=null;this.polling=false;this.active=false;this.refreshing=false;this.pending=null;
    this.applied={server_id:null,completed_revision:0};
+   this.checking=null;
   }
   baseline(snapshot){
    this.applied={server_id:snapshot.server_id,completed_revision:snapshot.completed_revision||0};
@@ -15,8 +16,8 @@
    this.active=this.mode==='live'&&Boolean(snapshot.collecting);
    this.arm();
   }
-  watch(mode){
-   if(mode===this.mode)return;
+  watch(mode,force=false){
+   if(mode===this.mode&&!force)return;
    this.generation++;this.source?.close();this.source=null;this.stopTimer();this.active=false;this.pending=null;this.mode=mode;
    if(mode!=='live')return;
    const generation=this.generation;
@@ -25,7 +26,7 @@
     if(generation!==this.generation)return;
     try{const snapshot=JSON.parse(event.data);this.onConnection(true);this.receive(snapshot);}catch(error){this.onConnection(false);}
    });
-   stream.onerror=()=>{if(generation===this.generation){this.stopTimer();this.onConnection(false);}};
+   stream.onerror=()=>{if(generation===this.generation){this.active=false;this.stopTimer();this.onConnection(false);}};
   }
   receive(snapshot){
    if(this.mode!=='live')return;
@@ -65,7 +66,26 @@
    }
   }
   resume(){this.arm();return this.flush();}
-  close(){this.generation++;this.source?.close();this.source=null;this.stopTimer();this.mode=null;this.active=false;this.pending=null;}
+  reconcile(){
+   if(this.mode!=='live'||this.canPoll?.()===false)return Promise.resolve(null);
+   if(!this.source)this.watch('live',true);
+   if(this.checking?.generation===this.generation)return this.checking.promise;
+   const check={generation:this.generation};this.checking=check;
+   check.promise=(async()=>{
+    try{
+     const snapshot=await this.readProgress();
+     if(check.generation!==this.generation)return null;
+     this.onConnection(true);this.receive(snapshot);await this.flush();return snapshot;
+    }catch(error){
+     if(check.generation===this.generation){this.active=false;this.stopTimer();this.onConnection(false);}
+     return null;
+    }finally{if(this.checking===check)this.checking=null;}
+   })();
+   return check.promise;
+  }
+  disconnect(){this.generation++;this.source?.close();this.source=null;this.stopTimer();this.active=false;this.checking=null;this.onConnection(false);}
+  reconnect(){if(this.mode!=='live')return Promise.resolve(null);this.watch('live',true);return this.reconcile();}
+  close(){this.generation++;this.source?.close();this.source=null;this.stopTimer();this.mode=null;this.active=false;this.pending=null;this.checking=null;}
  }
  if(typeof module!=='undefined'&&module.exports)module.exports=CollectionRefresh;
  else root.CollectionRefresh=CollectionRefresh;
