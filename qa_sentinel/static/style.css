@@ -609,3 +609,7 @@ dialog::backdrop{background:#0f233d88}
  .form-submit-row{gap:12px;flex-wrap:wrap}.settings-section p,.planned p{font-size:14px}.source-badge{font-size:12px}
  footer{font-size:12px}.modal-header h2{font-size:20px}
 }
+
+.collection-result{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;padding:14px 16px;border:1px solid #c8d5e5;border-radius:8px;background:#fff;color:#334155;font-size:13px;line-height:1.7}
+.collection-result.has-error{background:#fff6e5;border-color:#e0c47e;color:#754407}
+.collection-result a{color:#1d4ed8;font-weight:650}
