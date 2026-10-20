@@ -34,7 +34,8 @@ collection_lock = asyncio.Lock()
 collection_tasks = set()
 collection_status = {"started_at": None, "finished_at": None, "total": 0, "completed": 0, "results": []}
 scheduler_heartbeat = None
-CHANNEL_TIMEOUT_SECONDS = 120
+CHANNEL_TIMEOUT_SECONDS = 45
+COLLECTION_TIMEOUT_SECONDS = 120
 CHANNEL_CONCURRENCY = 3
 SCHEDULER_TICK_SECONDS = 10
 COLLECTION_INTERVAL_SECONDS = 15 * 60
@@ -64,6 +65,27 @@ async def collection_stream(request):
                 yield "event: collection\ndata: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
 
 
+
+def collection_counts(status):
+    results = status.get("results", [])
+    return {"succeeded": sum("inserted" in r for r in results),
+            "failed": sum("error" in r for r in results),
+            "skipped": sum("skipped" in r for r in results)}
+
+
+def finish_collection(db, status):
+    # End marker and revision are committed together, including forced-stop recovery.
+    with db.connect() as conn:
+        row = conn.execute("SELECT value FROM meta WHERE key='last_collection'").fetchone()
+        previous = json.loads(row[0]) if row else {}
+        saved = {**status, **collection_counts(status), "results": list(status.get("results", [])), "revision": (previous or {}).get("revision", 0) + 1}
+        values = [("last_collection", saved), ("active_collection", None)]
+        if status["outcome"] == "completed":
+            values.append(("collection_retry_after", None))
+        for key, value in values:
+            conn.execute("INSERT OR REPLACE INTO meta VALUES (?,?)", (key, json.dumps(value, ensure_ascii=False)))
+
+
 def database(mode):
     if mode not in {"demo", "live"}:
         raise HTTPException(400, "모드를 확인해 주세요.")
@@ -75,6 +97,14 @@ def database(mode):
                 db.begin_session(parse_date(db.get("demo_at")) - timedelta(hours=1))
             else:
                 db.begin_session(parse_date(PROGRAM_STARTED_AT))
+                active = db.get("active_collection")
+                if active:
+                    reason = "프로그램 재시작으로 이전 수집이 중단되었습니다. 저장한 글은 보존했습니다."
+                    recorded = {r.get("source_id") for r in active.get("results", [])}
+                    active.setdefault("results", []).extend({"source_id": source["id"], "source": source["name"], "skipped": reason}
+                        for source in active.get("sources", []) if source["id"] not in recorded)
+                    active.update(finished_at=PROGRAM_STARTED_AT, outcome="interrupted", stop_reason=reason, completed=active.get("total", 0))
+                    finish_collection(db, active)
             DATABASES[mode] = db
         return DATABASES[mode]
 
@@ -82,6 +112,9 @@ def database(mode):
 def collection_candidates(db, due_only=False):
     active = [s for s in db.sources() if s["enabled"]]
     waiting = [s for s in active if db.site_cooldown(site_domain(s["url"]))]
+    retry_after = db.get("collection_retry_after")
+    if retry_after and parse_date(retry_after) > now():
+        return [], waiting, active
     eligible = [s for s in active if s not in waiting and (not s["last_attempt"]
                 or (now() - parse_date(s["last_attempt"])).total_seconds() >= COLLECTION_INTERVAL_SECONDS)]
     return eligible, waiting, active
@@ -108,6 +141,11 @@ async def collect(due_only=False):
         if not eligible:
             return {"message": waiting_message(waiting, active), "results": []}
         collection_status.update(run_id=uuid.uuid4().hex, started_at=stamp(now()), finished_at=None, total=len(eligible), completed=0, results=[], outcome="running")
+        collection_status.update(stop_reason=None, succeeded=0, failed=0, skipped=0,
+            sources=[{"id": s["id"], "name": s["name"]} for s in eligible],
+            retry_after=stamp(now() + timedelta(seconds=COLLECTION_INTERVAL_SECONDS)))
+        db.put("collection_retry_after", collection_status["retry_after"])
+        db.put("active_collection", dict(collection_status))
         collection_notifications.publish(collection_snapshot(collecting=True))
         semaphore = asyncio.Semaphore(CHANNEL_CONCURRENCY)
         site_locks = defaultdict(asyncio.Lock)
@@ -122,13 +160,14 @@ async def collect(due_only=False):
             return current and current["enabled"] and all(current[k] == source[k] for k in ("url", "kind", "config"))
 
         async def collect_source(source):
-            result = {"source": source["name"]}
+            result = {"source": source["name"], "source_id": source["id"]}
             domain = site_domain(source["url"])
-            lock_key = domain
-            # Waiting galleries do not occupy concurrency slots needed by other sites.
-            async with site_locks[lock_key], semaphore:
-                guard_token = REQUEST_GUARD.set(guard)
-                try:
+            guard_token = None
+            attempted = False
+            try:
+                # The round deadline also covers waiting for this site's slot.
+                async with site_locks[domain], semaphore:
+                    guard_token = REQUEST_GUARD.set(guard)
                     if not db.get("settings")["running"] or not unchanged(source):
                         result["skipped"] = "일시정지 또는 채널 설정 변경으로 건너뛰었습니다."
                         return result
@@ -136,6 +175,7 @@ async def collect(due_only=False):
                     with db.connect() as conn:
                         conn.execute("UPDATE sources SET last_attempt=? WHERE id=?", (stamp(now()), source["id"]))
                         known = {r[0] for r in conn.execute("SELECT url FROM posts WHERE source_id=?", (source["id"],))}
+                    attempted = True
                     batch = await asyncio.wait_for(crawl(source, known), timeout=CHANNEL_TIMEOUT_SECONDS)
                     # A deleted/edited channel cannot receive results from its old request.
                     with db.lock:
@@ -173,42 +213,69 @@ async def collect(due_only=False):
                         if warning:
                             result["warning"] = warning
                     await asyncio.to_thread(db.detect)
-                except asyncio.CancelledError:
-                    raise
-                except CooldownActive as exc:
-                    result["skipped"] = str(exc)
-                except SiteBlocked as exc:
-                    message = error_message(exc)
-                    pause = db.defer_site(exc.domain, message, exc.retry_after)
-                    with db.connect() as conn:
-                        conn.execute("UPDATE sources SET error=?,warning=NULL WHERE id=?", (message, source["id"]))
-                    result.update(error=message, cooldown_until=pause["until_at"])
-                    logging.getLogger("qa_sentinel").warning("Site %s paused until %s", exc.domain, pause["until_at"])
-                except Exception as exc:
-                    message = error_message(exc)
-                    with db.lock:
-                        if unchanged(source):
-                            with db.connect() as conn:
-                                conn.execute("UPDATE sources SET error=?,warning=NULL WHERE id=?", (message, source["id"]))
-                    result["error"] = message
-                    logging.getLogger("qa_sentinel").warning("Channel %s: %s", source["id"], message)
-                finally:
+            except asyncio.CancelledError:
+                if "inserted" not in result:
+                    reason = collection_status.get("stop_reason") or "수집이 중단되었습니다. 저장한 글은 보존했습니다."
+                    result["error" if attempted else "skipped"] = reason
+                    if attempted and unchanged(source):
+                        with db.connect() as conn:
+                            conn.execute("UPDATE sources SET error=?,warning=NULL WHERE id=?", (reason, source["id"]))
+                raise
+            except CooldownActive as exc:
+                result["skipped"] = str(exc)
+            except SiteBlocked as exc:
+                message = error_message(exc)
+                pause = db.defer_site(exc.domain, message, exc.retry_after)
+                with db.connect() as conn:
+                    conn.execute("UPDATE sources SET error=?,warning=NULL WHERE id=?", (message, source["id"]))
+                result.update(error=message, cooldown_until=pause["until_at"])
+                logging.getLogger("qa_sentinel").warning("Site %s paused until %s", exc.domain, pause["until_at"])
+            except Exception as exc:
+                message = error_message(exc)
+                with db.lock:
+                    if unchanged(source):
+                        with db.connect() as conn:
+                            conn.execute("UPDATE sources SET error=?,warning=NULL WHERE id=?", (message, source["id"]))
+                result["error"] = message
+                logging.getLogger("qa_sentinel").warning("Channel %s: %s", source["id"], message)
+            finally:
+                if guard_token is not None:
                     REQUEST_GUARD.reset(guard_token)
-                    collection_status["completed"] += 1
-                    collection_status["results"].append(result)
+                collection_status["completed"] += 1
+                collection_status["results"].append(result)
+                collection_status.update(collection_counts(collection_status))
+                db.put("active_collection", {**collection_status, "results": list(collection_status["results"])})
             return result
 
-        finished = False
+        jobs = [asyncio.create_task(collect_source(source)) for source in eligible]
+        outcome = "interrupted"
         try:
-            results = await asyncio.gather(*(collect_source(s) for s in eligible))
-            finished = True
-            return {"message": "수집이 완료되었습니다.", "results": results}
+            _, pending = await asyncio.wait(jobs, timeout=COLLECTION_TIMEOUT_SECONDS)
+            if pending:
+                outcome = "timed_out"
+                collection_status["stop_reason"] = f"전체 수집 {COLLECTION_TIMEOUT_SECONDS:g}초 제한을 초과하여 남은 작업을 중단했습니다. 인터넷 연결과 채널 오류를 확인해 주세요."
+                for job in pending:
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            if outcome != "timed_out":
+                counts = collection_counts(collection_status)
+                outcome = ("partial" if counts["succeeded"] else "failed") if counts["failed"] else "completed"
+        except asyncio.CancelledError:
+            collection_status["stop_reason"] = "수집이 중단되었습니다. 저장한 글과 처리 상태는 보존했습니다."
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+            await asyncio.gather(*jobs, return_exceptions=True)
+            raise
         finally:
-            collection_status["finished_at"] = stamp(now())
-            collection_status["outcome"] = "completed" if finished else "interrupted"
-            previous = db.get("last_collection") or {}
-            db.put("last_collection", {**collection_status, "results": list(collection_status["results"]), "revision": previous.get("revision", 0) + 1})
+            collection_status.update(finished_at=stamp(now()), outcome=outcome)
+            if outcome == "completed":
+                collection_status["retry_after"] = None
+            finish_collection(db, collection_status)
             collection_notifications.publish(collection_snapshot(collecting=False))
+        counts = collection_counts(collection_status)
+        message = f"수집 {'시간 초과' if outcome == 'timed_out' else '종료'} · 완료 {counts['succeeded']}개 · 실패 {counts['failed']}개 · 건너뜀 {counts['skipped']}개"
+        return {"message": message, "results": list(collection_status["results"]), "outcome": outcome}
 
 
 def start_collection(due_only=False):
