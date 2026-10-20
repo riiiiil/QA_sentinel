@@ -53,5 +53,22 @@ function harness(){
  h=harness();h.start();h.controller.reload=async()=>{h.loads++;return null;};h.send(snapshot(1));await tick();assert.equal(h.loads,1);assert(h.controller.pending);
  h.controller.reload=async()=>{h.loads++;return h.latest;};await h.controller.resume();assert.equal(h.loads,2);assert.equal(h.controller.pending,null);h.controller.close();
 
+ // Recovery reads only local progress; no automatic collection restart.
+ h=harness();h.latest=snapshot(0,true);h.start();h.controller.disconnect();
+ assert.equal(h.timers.size,0);assert(h.streams[0].closed);
+ h.latest=snapshot(1,false);await h.controller.reconnect();await tick();
+ assert.equal(h.polls,1);assert.equal(h.loads,1);assert.equal(h.controller.active,false);assert.equal(h.timers.size,0);h.controller.close();
+ h=harness();h.start();let resolveCheck;
+ h.controller.readProgress=()=>{h.polls++;return new Promise(resolve=>resolveCheck=resolve);};
+ const one=h.controller.reconcile(),two=h.controller.reconcile();assert.strictEqual(one,two);assert.equal(h.polls,1);
+ resolveCheck(snapshot(0,true));await one;assert.equal(h.timers.size,1);h.controller.close();
+ h=harness();h.start();h.controller.readProgress=async()=>{h.polls++;throw Error('local connection lost');};
+ assert.equal(await h.controller.reconcile(),null);assert.equal(h.timers.size,0);assert(h.connections.includes(false));
+ h.controller.readProgress=async()=>{h.polls++;return snapshot(0,false);};await h.controller.reconcile();assert(h.connections.at(-1));h.controller.close();
+ h=harness();h.start();let resolveStale;
+ h.controller.readProgress=()=>new Promise(resolve=>resolveStale=resolve);
+ const stale=h.controller.reconcile(),progressBefore=h.progress.length;
+ h.controller.baseline(snapshot(0,false,'a','demo'));resolveStale(snapshot(0,true));await stale;
+ assert.equal(h.progress.length,progressBefore);assert.equal(h.timers.size,0);h.controller.close();
  console.log('PASS: no idle polling; collection-only 3s progress; completion refresh; deferred editing; reconnect; mode and request races.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
