@@ -18,12 +18,13 @@ function node(selector){
  };nodes.set(selector,value);return value;
 }
 const document={documentElement:{classList:classes()},querySelector:node,querySelectorAll(){return[];},addEventListener(type,listener){if(!documentEvents.has(type))documentEvents.set(type,[]);documentEvents.get(type).push(listener);}};
-const context={assert,console,document,localStorage:{getItem(){return'demo';},setItem(){}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#feedback'},setTimeout,clearTimeout};
+const context={assert,console,SentinelChart:require('../qa_sentinel/static/chart.js'),document,localStorage:{getItem(){return'demo';},setItem(){}},window:{addEventListener(){},scrollTo(){}},location:{hash:'#feedback'},setTimeout,clearTimeout};
 vm.createContext(context);
 vm.runInContext(code,context);
 (async()=>{
  await vm.runInContext(`(async()=>{
- state={at:'2026-10-17T12:00:00Z',offline_test:false,settings:{lookback_minutes:0,warning:3,danger:5,running:true},sources:[{id:'dc',name:'갤러리',kind:'dcinside'},{id:'arca',name:'아카라이브',kind:'arcalive'}],keywords:[{name:'결제',terms:['결제'],enabled:true},{name:'팅김',terms:['팅김'],enabled:true}],events:[],detection:{level:'normal',count:0,keywords:[]},collecting:false,posts:[
+ assert.strictEqual(range,0);
+ state={started_at:'2026-10-17T11:00:00Z',scope:{start_at:'2026-10-17T11:00:00Z'},at:'2026-10-17T12:00:00Z',offline_test:false,settings:{lookback_minutes:0,warning:3,danger:5,running:true},sources:[{id:'dc',name:'갤러리',kind:'dcinside'},{id:'arca',name:'아카라이브',kind:'arcalive'}],keywords:[{name:'결제',terms:['결제'],enabled:true},{name:'팅김',terms:['팅김'],enabled:true}],events:[],detection:{level:'normal',count:0,keywords:[]},collecting:false,posts:[
  {id:1,title:'결제 환불 문의',body:'내용',source_id:'dc',source_name:'갤러리',published_at:'2026-10-17T11:59:00Z',keywords:['결제']},
  {id:2,title:'팅김 문의',body:'내용',source_id:'arca',source_name:'아카라이브',published_at:'2026-10-17T11:59:00Z',keywords:['팅김']},
  {id:3,title:'결제와 팅김 문의',body:'내용',source_id:'dc',source_name:'갤러리',published_at:'2026-10-17T11:59:00Z',keywords:['결제','팅김']} ]};
@@ -36,6 +37,7 @@ vm.runInContext(code,context);
  mode='live';state.collection={started_at:'2026-10-17T11:55:00Z',finished_at:'2026-10-17T11:56:00Z',outcome:'completed'};
  assert(heading('테스트','').includes('최근 수집 종료'));assert(!heading('테스트','').includes('마지막 화면 갱신'));
  state.collecting=true;assert(collectionTimeText().includes('수집 진행 중'));state.collecting=false;mode='demo';
+ drawChart();assert(document.querySelector('#chart').innerHTML.includes('chart-cumulative-line'));assert(document.querySelector('#chart').innerHTML.includes('data-cumulative-total="3"'));assert(dashboardView().includes('이번 실행 전체'));
  assert.strictEqual(currentPosts().length,3);
  state.posts[0].feedback_status='non_issue';state.posts[1].feedback_status='in_progress';state.posts[2].feedback_status='resolved';
  assert.strictEqual(currentPosts().length,0);assert.strictEqual(feedbackPosts().length,3);
