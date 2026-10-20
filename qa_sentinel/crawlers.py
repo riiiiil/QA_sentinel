@@ -19,6 +19,7 @@ from .core import canonical_url, parse_date, stamp, valid_url
 from .politeness import SiteBlocked, CooldownActive, REQUEST_GUARD, retry_after_seconds, site_domain, wait_request_slot
 
 KST = ZoneInfo("Asia/Seoul")
+DNS_TIMEOUT_SECONDS = 5
 USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
@@ -59,6 +60,8 @@ def error_message(exc):
         return f"HTTP {code}: {reasons.get(code, '서버가 오류를 반환했습니다')}."
     if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
         return "수집 시간 제한을 초과했습니다. 다른 채널의 수집은 계속됩니다."
+    if isinstance(exc, httpx.NetworkError):
+        return "네트워크 연결에 실패했습니다. 인터넷 연결을 확인한 뒤 다음 수집 시각에 다시 시도해 주세요."
     if isinstance(exc, ValueError):
         return str(exc)[:250]
     if isinstance(exc, socket.gaierror):
@@ -75,7 +78,7 @@ async def safe_get(client, url):
         guard = REQUEST_GUARD.get()
         if guard:
             guard(domain)
-        addresses = await asyncio.to_thread(socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM)
+        addresses = await asyncio.wait_for(asyncio.to_thread(socket.getaddrinfo, host, 443, type=socket.SOCK_STREAM), timeout=DNS_TIMEOUT_SECONDS)
         if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
             raise ValueError("공개 인터넷 주소만 수집할 수 있습니다.")
         await wait_request_slot(domain)
