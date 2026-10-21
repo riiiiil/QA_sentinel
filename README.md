@@ -1,6 +1,22 @@
 # QA Sentinel 1.7.1
 
-게임 커뮤니티에서 버그와 불만 신호를 수집하고 확인하는 웹 프로그램입니다. Python 서버, SQLite 저장소, 별도 빌드가 필요 없는 웹 대시보드로 구성됩니다.
+**프로젝트 목적** : 게임 출시 및 패치 이후 커뮤니티에서 발생하는 이상 징후를 신속하게 파악하기 위한 QA 지원 도구
+
+**본인 역할** : 문제 정의, 기획서·요구사항 작성, AI 구현 결과 검토, 실제 사용 테스트, 개선 방향 결정
+
+**AI 활용** : Codex를 이용한 프로그램 구현 및 수정
+
+**현재 구현** : 게시글 제목 수집, 키워드 기반 경고, 누적 집계, 대시보드, 피드백 상태 관리
+
+**미구현 및 한계** : 메신저 웹훅 전송, 게시글 본문 분석, AI 의미 분류
+
+**데모 버전 예시** : 
+
+<img width="1899" height="911" alt="image" src="https://github.com/user-attachments/assets/440e579c-ac75-4474-9626-c301374cbcc2" />
+
+
+<img width="1893" height="921" alt="image" src="https://github.com/user-attachments/assets/1eba35c4-1840-4dad-a21a-be33b0f83203" />
+
 
 ## 실행
 
