@@ -10,7 +10,7 @@
 
 **미구현 및 한계** : 메신저 웹훅 전송, 게시글 본문 분석, AI 의미 분류
 
-**데모 버전 예시** : 
+**데모 데이터 예시** : 
 
 <img width="1899" height="911" alt="image" src="https://github.com/user-attachments/assets/440e579c-ac75-4474-9626-c301374cbcc2" />
 
